@@ -475,61 +475,6 @@ PY
     fi
 }
 
-# Generate exported symbols list for ios_system commands (used with dlsym RTLD_MAIN_ONLY)
-generate_exported_symbols() {
-    local COMMANDS_PLIST
-    COMMANDS_PLIST=$(find "$SOURCE_DIR" -name "blinkCommandsDictionary.plist" -print -quit 2>/dev/null)
-    if [ -z "$COMMANDS_PLIST" ]; then
-        echo "  Warning: blinkCommandsDictionary.plist not found"
-        return 1
-    fi
-
-    local SYMBOLS_FILE="${SOURCE_DIR}/Blink/ExportedSymbols.txt"
-
-    python3 - "$COMMANDS_PLIST" "$SYMBOLS_FILE" << 'PY'
-import plistlib
-import re
-import sys
-from pathlib import Path
-
-plist_path = Path(sys.argv[1])
-out_path = Path(sys.argv[2])
-
-with plist_path.open("rb") as fh:
-    data = plistlib.load(fh)
-
-symbols = set()
-pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*_main$")
-
-def walk(obj):
-    if isinstance(obj, dict):
-        for v in obj.values():
-            walk(v)
-    elif isinstance(obj, list):
-        for v in obj:
-            walk(v)
-    elif isinstance(obj, str):
-        if pattern.match(obj):
-            symbols.add("_" + obj)
-
-walk(data)
-
-if not symbols:
-    sys.exit(2)
-
-out_path.write_text("\n".join(sorted(symbols)) + "\n", encoding="utf-8")
-PY
-
-    if [ $? -ne 0 ]; then
-        echo "  Warning: No exported symbols discovered in $COMMANDS_PLIST"
-        return 1
-    fi
-
-    EXPORTED_SYMBOLS_FILE_PATH="$SYMBOLS_FILE"
-    echo "  Exported symbols list generated: $SYMBOLS_FILE"
-    return 0
-}
-
 # Function to fix get_resources.sh for repeated runs
 fix_get_resources_script() {
     local SCRIPT_FILE="${SOURCE_DIR}/get_resources.sh"
@@ -814,16 +759,10 @@ build_app() {
     else
         # Generic iOS build (unsigned .ipa for sideloading)
         # Use sideload-friendly entitlements (no iCloud, Push, etc.)
-        EXPORTED_SYMBOLS_FILE_PATH=""
-        generate_exported_symbols || true
-        local EXPORTED_SYMBOLS_FILE_ARG=""
-        if [ -n "$EXPORTED_SYMBOLS_FILE_PATH" ]; then
-            EXPORTED_SYMBOLS_FILE_ARG="EXPORTED_SYMBOLS_FILE=${EXPORTED_SYMBOLS_FILE_PATH}"
-        fi
-
         run_xcodebuild xcodebuild \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
+            -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "${BUILD_DIR}/DerivedData" \
             CONFIGURATION_BUILD_DIR="${BUILD_DIR}/Products" \
@@ -834,7 +773,7 @@ build_app() {
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_ENTITLEMENTS="${SOURCE_DIR}/Blink/Blink-sideload.entitlements" \
             DEAD_CODE_STRIPPING=NO \
-            $EXPORTED_SYMBOLS_FILE_ARG \
+            ENABLE_PREVIEWS=NO \
             $EXTRA_FLAGS
 
         # Package as unsigned .ipa

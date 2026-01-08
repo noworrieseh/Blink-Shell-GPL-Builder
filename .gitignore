@@ -4,6 +4,7 @@ build-output/
 dist/
 *.ipa
 blink-src/
+.cache/
 
 # Xcode
 *.xcarchive

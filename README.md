@@ -54,6 +54,8 @@ Options:
   --keep-build     Keep build-output/ after a successful build
   --keep-source    Keep blink-src/ after a successful build
   --non-interactive Skip prompts and reuse existing blink-src/
+  --skip-migrator  Skip app migrations (debug)
+  --minimal-entitlements Use stripped entitlements (debug)
   --help           Show help message
 ```
 
@@ -79,6 +81,12 @@ blink-src/                # Source checkout (removed by default)
   ```bash
   ./build-blink.sh v19.0.0
   ```
+- The build uses Blink’s default entitlements and migrations by default.
+- If a sideloaded build crashes at launch, try `--skip-migrator`.
+- If your signing service rejects the IPA due to entitlements, try
+  `--minimal-entitlements`.
+- The script skips Blink’s migration step in sideload builds to avoid assertion
+  failures when App Group containers aren’t available.
 
 ## Troubleshooting
 
