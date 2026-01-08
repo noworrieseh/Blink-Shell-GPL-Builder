@@ -11,6 +11,8 @@ Automated build script that produces unsigned `.ipa` files for sideloading via s
    ```bash
    xcode-select --install
    ```
+3. **Xcode platform content**: Install the iOS platform and iOS Simulator runtime
+   (Xcode > Settings > Platforms).
 
 ### Build Unsigned IPA
 
