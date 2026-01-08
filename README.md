@@ -1,6 +1,16 @@
-# Blink Build Wrapper
+# Blink Shell GPL Builder
 
-This repo is a small wrapper that downloads the Blink source, applies a few build-time fixes, and produces a ready-to-upload IPA. It does not ship or modify Blink source in the wrapper repo.
+This repo is a small wrapper that downloads the Blink Shell GPL source code, removes the paywall, applies a few other build-time fixes, and produces a ready-to-upload IPA.
+
+## What the script does
+
+- Clones Blink into `blink-src/`
+- Fixes a couple of Swift package pins
+- Makes the vim runtime fetch repeatable
+- Applies the GPL sideload paywall patch
+- Builds the app and places the output in `dist/`
+- Cleans up `build-output/` and `blink-src/` by default
+
 
 ## Requirements
 
@@ -23,26 +33,7 @@ Output:
 
 Upload the IPA to your signing service (AltStore, Sideloadly, etc).
 
-## What the script does
 
-- Clones Blink into `blink-src/`
-- Fixes a couple of Swift package pins
-- Makes the vim runtime fetch repeatable
-- Applies the GPL sideload paywall patch
-- Builds the app and places the output in `dist/`
-- Cleans up `build-output/` and `blink-src/` by default
-
-## GPL sideload patch
-
-After cloning, the script rewrites a few subscription checks in Blink so the
-GPL sideload build runs without the in-app paywall. It replaces the bodies of
-`currentPlanName`, `customerTier`, and `hasActiveSubscriptions` in
-`Blink/Subscriptions/EntitlementsManager.swift` and tags them with
-`// BLINK_WRAPPER_PATCH`.
-
-Use `--keep-source` if you want to inspect the patched file. If you want
-different behavior, edit the `patch_remove_paywall` function in
-`build-blink.sh`.
 
 ## Options
 
@@ -52,10 +43,10 @@ different behavior, edit the `patch_remove_paywall` function in
 Options:
   --setup-only     Only setup/clone, don't build
   --build          Build unsigned .ipa (default)
-  --clean          Clean build before building
   --simulator      Build and run in iOS Simulator
   --archive        Create signed archive (requires Apple Developer account)
   --install        Build and install to device (requires Apple Developer account)
+  --clean          Clean build before building
   --keep-build     Keep build-output/ after a successful build
   --keep-source    Keep blink-src/ after a successful build
   --help           Show help message
