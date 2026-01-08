@@ -93,19 +93,21 @@ fix_package_dependencies() {
     echo "Fixing package dependencies..."
 
     # Fix swiftui-cached-async-image (main branch has broken Package.swift)
-    if grep -q 'swiftui-cached-async-image' "${PROJECT}/project.pbxproj" 2>/dev/null; then
+    if grep -q 'XCRemoteSwiftPackageReference "swiftui-cached-async-image"' "${PROJECT}/project.pbxproj" 2>/dev/null; then
         sed -i '' '/XCRemoteSwiftPackageReference "swiftui-cached-async-image"/,/};/{
             s/branch = main;/kind = upToNextMajorVersion;/
             s/kind = branch;/minimumVersion = 1.9.0;/
+            s/minimumVersion = [0-9.][0-9.]*;/minimumVersion = 1.9.0;/
         }' "${PROJECT}/project.pbxproj"
         echo "  Fixed swiftui-cached-async-image package"
     fi
 
     # Fix SwiftCBOR (master branch tracking causes issues)
-    if grep -q 'branch = master' "${PROJECT}/project.pbxproj" 2>/dev/null; then
+    if grep -q 'XCRemoteSwiftPackageReference "SwiftCBOR"' "${PROJECT}/project.pbxproj" 2>/dev/null; then
         sed -i '' '/XCRemoteSwiftPackageReference "SwiftCBOR"/,/};/{
             s/branch = master;/kind = upToNextMajorVersion;/
-            s/minimumVersion = 1.9.0;/minimumVersion = 0.4.0;/
+            s/kind = branch;/minimumVersion = 0.4.0;/
+            s/minimumVersion = [0-9.][0-9.]*;/minimumVersion = 0.4.0;/
         }' "${PROJECT}/project.pbxproj"
         echo "  Fixed SwiftCBOR package"
     fi
@@ -114,6 +116,7 @@ fix_package_dependencies() {
     rm -rf ~/Library/Caches/org.swift.swiftpm/manifests 2>/dev/null || true
     rm -rf "${SOURCE_DIR}/Blink.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved" 2>/dev/null || true
 }
+
 
 # Function to remove paywall (GPL sideload build)
 patch_remove_paywall() {
