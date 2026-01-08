@@ -16,6 +16,7 @@ set -e
 #   --install        Build and install to connected device (requires dev account)
 #   --keep-build     Keep build-output/ after a successful build
 #   --keep-source    Keep blink-src/ after a successful build
+#   --non-interactive Skip prompts and reuse existing blink-src/
 #   --help           Show this help message
 #
 # Examples:
@@ -43,6 +44,7 @@ DO_INSTALL=false
 DO_SIMULATOR=false
 KEEP_BUILD=false
 KEEP_SOURCE=false
+NON_INTERACTIVE=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -81,8 +83,12 @@ while [[ $# -gt 0 ]]; do
             KEEP_SOURCE=true
             shift
             ;;
+        --non-interactive)
+            NON_INTERACTIVE=true
+            shift
+            ;;
         --help)
-            head -25 "$0" | tail -22
+            head -26 "$0" | tail -23
             exit 0
             ;;
         v*)
@@ -102,6 +108,48 @@ echo "=================================="
 echo "Version: $VERSION"
 echo "Source directory: $SOURCE_DIR"
 echo ""
+
+# Preflight checks
+preflight_checks() {
+    local missing=0
+
+    if ! command -v git &> /dev/null; then
+        echo "Error: git is required but not found."
+        missing=1
+    fi
+
+    if ! command -v python3 &> /dev/null; then
+        echo "Error: python3 is required but not found."
+        missing=1
+    fi
+
+    if ! command -v xcodebuild &> /dev/null; then
+        echo "Error: Xcode is required. Install Xcode and run xcode-select --install."
+        missing=1
+    fi
+
+    if ! xcode-select -p &> /dev/null; then
+        echo "Error: Xcode Command Line Tools not configured. Run xcode-select --install."
+        missing=1
+    fi
+
+    if ! xcrun --sdk iphoneos --show-sdk-path &> /dev/null; then
+        echo "Error: iOS platform content is missing. Install iOS in Xcode > Settings > Platforms."
+        missing=1
+    fi
+
+    if [ "$DO_SIMULATOR" = true ]; then
+        if ! xcrun --sdk iphonesimulator --show-sdk-path &> /dev/null; then
+            echo "Error: iOS Simulator platform content is missing."
+            echo "Install it in Xcode > Settings > Platforms."
+            missing=1
+        fi
+    fi
+
+    if [ "$missing" -ne 0 ]; then
+        exit 1
+    fi
+}
 
 # Function to fix package dependencies
 fix_package_dependencies() {
@@ -310,13 +358,20 @@ ENTITLEMENTS_EOF
 setup_repository() {
     if [ -d "$SOURCE_DIR" ]; then
         echo "Source directory already exists."
-        read -p "Do you want to clean and re-clone? (y/N) " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "Removing existing source directory..."
-            rm -rf "$SOURCE_DIR"
+        if [ "$NON_INTERACTIVE" = true ]; then
+            echo "Non-interactive mode: using existing source directory."
         else
-            echo "Using existing source directory..."
+            read -p "Do you want to clean and re-clone? (y/N) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo "Removing existing source directory..."
+                rm -rf "$SOURCE_DIR"
+            else
+                echo "Using existing source directory..."
+            fi
+        fi
+
+        if [ -d "$SOURCE_DIR" ]; then
             cd "$SOURCE_DIR"
 
             echo "Fetching latest changes..."
@@ -548,6 +603,7 @@ build_app() {
 }
 
 # Main execution
+preflight_checks
 setup_repository
 
 if [ "$SETUP_ONLY" = true ]; then

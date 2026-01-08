@@ -1,10 +1,10 @@
 # Blink Shell GPL Builder
 
-This repo is a small wrapper that downloads the Blink Shell GPL source code, removes the paywall, applies a few other build-time fixes, and produces a ready-to-upload IPA.
+This repo is a small script that downloads the Blink Shell GPL source code, removes the paywall, applies a few other build-time fixes, and produces a ready-to-upload IPA.
 
 ## What the script does
 
-- Clones Blink into `blink-src/`
+- Clones Blink Shell into `blink-src/`
 - Fixes a couple of Swift package pins
 - Makes the vim runtime fetch repeatable
 - Applies the GPL sideload paywall patch
@@ -21,6 +21,10 @@ This repo is a small wrapper that downloads the Blink Shell GPL source code, rem
   ```
 - Xcode platform content: install the iOS platform and iOS Simulator runtime
   (Xcode > Settings > Platforms)
+- Git and Python 3
+
+The script runs preflight checks and exits early with clear errors if anything
+is missing.
 
 ## Quick start
 
@@ -49,6 +53,7 @@ Options:
   --clean          Clean build before building
   --keep-build     Keep build-output/ after a successful build
   --keep-source    Keep blink-src/ after a successful build
+  --non-interactive Skip prompts and reuse existing blink-src/
   --help           Show help message
 ```
 
@@ -73,3 +78,20 @@ blink-src/                # Source checkout (removed by default)
   ```bash
   ./build-blink.sh v19.0.0
   ```
+
+## Troubleshooting
+
+Package dependency errors:
+```bash
+rm -rf ~/Library/Caches/org.swift.swiftpm
+./build-blink.sh --clean
+```
+
+Finding available versions:
+```bash
+git ls-remote --tags https://github.com/blinksh/blink.git | grep -E "v[0-9]+"
+```
+
+## License
+
+MIT. See `LICENSE`.
