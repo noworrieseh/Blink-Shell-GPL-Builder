@@ -770,6 +770,7 @@ build_app() {
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_ENTITLEMENTS="${SOURCE_DIR}/Blink/Blink-sideload.entitlements" \
+            DEAD_CODE_STRIPPING=NO \
             $EXTRA_FLAGS
 
         # Package as unsigned .ipa
