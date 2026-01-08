@@ -15,6 +15,7 @@ set -e
 #   --archive        Create signed archive (requires dev account)
 #   --install        Build and install to connected device (requires dev account)
 #   --keep-build     Keep build-output/ after a successful build
+#   --keep-source    Keep blink-src/ after a successful build
 #   --help           Show this help message
 #
 # Examples:
@@ -28,6 +29,8 @@ VERSION="v18.4.2"
 SOURCE_DIR="${SCRIPT_DIR}/blink-src"
 BUILD_DIR="${SCRIPT_DIR}/build-output"
 OUTPUT_DIR="${SCRIPT_DIR}/dist"
+OUTPUT_ARCHIVE_PATH=""
+OUTPUT_IPA_PATH=""
 SCHEME="Blink"
 PROJECT="${SOURCE_DIR}/Blink.xcodeproj"
 
@@ -39,6 +42,7 @@ DO_ARCHIVE=false
 DO_INSTALL=false
 DO_SIMULATOR=false
 KEEP_BUILD=false
+KEEP_SOURCE=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -71,6 +75,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --keep-build)
             KEEP_BUILD=true
+            shift
+            ;;
+        --keep-source)
+            KEEP_SOURCE=true
             shift
             ;;
         --help)
@@ -368,12 +376,12 @@ build_app() {
             -skipMacroValidation \
             archive
 
+        mkdir -p "$OUTPUT_DIR"
+        OUTPUT_ARCHIVE_PATH="${OUTPUT_DIR}/Blink-${VERSION}.xcarchive"
         if [ "$KEEP_BUILD" = true ]; then
-            OUTPUT_ARCHIVE_PATH="$ARCHIVE_PATH"
+            cp -R "$ARCHIVE_PATH" "$OUTPUT_ARCHIVE_PATH"
         else
-            mkdir -p "$OUTPUT_DIR"
-            mv "$ARCHIVE_PATH" "$OUTPUT_DIR/"
-            OUTPUT_ARCHIVE_PATH="${OUTPUT_DIR}/Blink.xcarchive"
+            mv "$ARCHIVE_PATH" "$OUTPUT_ARCHIVE_PATH"
         fi
 
         echo ""
@@ -400,7 +408,7 @@ build_app() {
         echo "Packaging unsigned .ipa for sideloading..."
         APP_PATH="${BUILD_DIR}/Products/Blink.app"
         IPA_PATH="${BUILD_DIR}/Blink-unsigned.ipa"
-        OUTPUT_IPA_PATH="${OUTPUT_DIR}/Blink-unsigned.ipa"
+        OUTPUT_IPA_PATH="${OUTPUT_DIR}/Blink-unsigned-${VERSION}.ipa"
 
         if [ -d "$APP_PATH" ]; then
             # Create Payload directory structure
@@ -465,6 +473,10 @@ if [ "$DO_BUILD" = true ] || [ "$DO_INSTALL" = true ] || [ "$DO_ARCHIVE" = true 
         echo "Cleaning build output..."
         rm -rf "$BUILD_DIR"
     fi
+    if [ "$KEEP_SOURCE" = false ]; then
+        echo "Cleaning source checkout..."
+        rm -rf "$SOURCE_DIR"
+    fi
 fi
 
 echo ""
@@ -478,9 +490,9 @@ if [ "$DO_SIMULATOR" = true ]; then
 elif [ "$DO_INSTALL" = true ]; then
     echo "App has been installed to your device."
 elif [ "$DO_ARCHIVE" = true ]; then
-    echo "Archive location: ${BUILD_DIR}/Blink.xcarchive"
+    echo "Archive location: ${OUTPUT_ARCHIVE_PATH}"
 else
-    echo "Unsigned IPA: ${BUILD_DIR}/Blink-unsigned.ipa"
+    echo "Unsigned IPA: ${OUTPUT_IPA_PATH}"
     echo ""
     echo "Upload this .ipa to your signing service for sideloading."
 fi
