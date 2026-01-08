@@ -32,6 +32,18 @@ Upload the IPA to your signing service (AltStore, Sideloadly, etc).
 - Builds the app and places the output in `dist/`
 - Cleans up `build-output/` and `blink-src/` by default
 
+## GPL sideload patch
+
+After cloning, the script rewrites a few subscription checks in Blink so the
+GPL sideload build runs without the in-app paywall. It replaces the bodies of
+`currentPlanName`, `customerTier`, and `hasActiveSubscriptions` in
+`Blink/Subscriptions/EntitlementsManager.swift` and tags them with
+`// BLINK_WRAPPER_PATCH`.
+
+Use `--keep-source` if you want to inspect the patched file. If you want
+different behavior, edit the `patch_remove_paywall` function in
+`build-blink.sh`.
+
 ## Options
 
 ```

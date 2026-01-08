@@ -149,7 +149,7 @@ with open(path, "r", encoding="utf-8") as fh:
     data = fh.read()
 
 def replace_func(name, body_lines):
-    pattern = re.compile(rf"\\bpublic func {re.escape(name)}\\b")
+    pattern = re.compile(rf"\bpublic func {re.escape(name)}\b")
     m = pattern.search(data)
     if not m:
         return data, False
@@ -219,8 +219,8 @@ def replace_func(name, body_lines):
         return data, False
 
     inner_indent = indent + "  "
-    new_body = "\\n".join([inner_indent + line for line in body_lines])
-    new_data = data[:brace_open + 1] + "\\n" + new_body + "\\n" + indent + "}" + data[brace_close + 1:]
+    new_body = "\n".join([inner_indent + line for line in body_lines])
+    new_data = data[:brace_open + 1] + "\n" + new_body + "\n" + indent + "}" + data[brace_close + 1:]
     return new_data, True
 
 changed = False
