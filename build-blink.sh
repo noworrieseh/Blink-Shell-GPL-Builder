@@ -310,6 +310,171 @@ PY
     fi
 }
 
+# Patch to skip Migrator (uses FileProvider APIs that don't work with sideloading)
+patch_skip_migrator() {
+    echo "Patching: Skipping Migrator for sideload build..."
+
+    local APP_DELEGATE="${SOURCE_DIR}/Blink/AppDelegate.m"
+
+    if [ -f "$APP_DELEGATE" ]; then
+        # Comment out [Migrator perform]; call
+        if grep -q '^\s*\[Migrator perform\];' "$APP_DELEGATE" 2>/dev/null; then
+            sed -i '' 's/^\([[:space:]]*\)\[Migrator perform\];/\1\/\/ [Migrator perform]; \/\/ Disabled for sideload - uses FileProvider APIs/' "$APP_DELEGATE"
+            echo "  Migrator disabled in AppDelegate.m"
+        elif grep -q '// \[Migrator perform\];' "$APP_DELEGATE" 2>/dev/null; then
+            echo "  Migrator already disabled"
+        else
+            echo "  Warning: Could not find Migrator call in AppDelegate.m"
+        fi
+    else
+        echo "  Warning: AppDelegate.m not found"
+    fi
+}
+
+# Patch to guard FileProvider APIs when extensions are missing (sideload)
+patch_fileprovider_sideload() {
+    echo "Patching: Guarding FileProvider APIs for sideload build..."
+
+    local FP_DOMAIN="${SOURCE_DIR}/Settings/Model/FileProviderDomain.swift"
+    local MIGRATION_FILE="${SOURCE_DIR}/Blink/Migrator/1810Migration.swift"
+    local APP_DELEGATE="${SOURCE_DIR}/Blink/AppDelegate.m"
+
+    if [ -f "$FP_DOMAIN" ]; then
+        python3 - "$FP_DOMAIN" << 'PY'
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    data = fh.read()
+
+changed = False
+
+if "FileProviderAvailability.isAvailable" not in data:
+    pattern = re.compile(r'(^[ \t]*)@objc static func syncWithBKHosts\(\) \{', re.M)
+    match = pattern.search(data)
+    if match:
+        indent = match.group(1)
+        inner_indent = indent + "  "
+        guard_block = (
+            "\n"
+            f"{inner_indent}guard FileProviderAvailability.isAvailable else {{\n"
+            f"{inner_indent}  return\n"
+            f"{inner_indent}}}\n"
+        )
+        data = data[:match.end()] + guard_block + data[match.end():]
+        changed = True
+
+if "final class FileProviderAvailability" not in data:
+    availability_block = (
+        "\n\n"
+        "@objc final class FileProviderAvailability: NSObject {\n"
+        "  @objc static let isAvailable: Bool = {\n"
+        "    guard let pluginsURL = Bundle.main.builtInPlugInsURL else {\n"
+        "      return false\n"
+        "    }\n"
+        "    guard let pluginURLs = try? FileManager.default.contentsOfDirectory(at: pluginsURL, includingPropertiesForKeys: nil) else {\n"
+        "      return false\n"
+        "    }\n\n"
+        "    for url in pluginURLs where url.pathExtension == \"appex\" {\n"
+        "      guard\n"
+        "        let bundle = Bundle(url: url),\n"
+        "        let extensionInfo = bundle.infoDictionary?[\"NSExtension\"] as? [String: Any],\n"
+        "        let pointIdentifier = extensionInfo[\"NSExtensionPointIdentifier\"] as? String\n"
+        "      else {\n"
+        "        continue\n"
+        "      }\n\n"
+        "      if pointIdentifier == \"com.apple.fileprovider-nonui\" ||\n"
+        "         pointIdentifier == \"com.apple.fileprovider\" ||\n"
+        "         pointIdentifier == \"com.apple.fileprovider-replicated\" {\n"
+        "        return true\n"
+        "      }\n"
+        "    }\n\n"
+        "    return false\n"
+        "  }()\n"
+        "}\n"
+    )
+    data = data.rstrip() + availability_block
+    changed = True
+
+if changed:
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(data)
+PY
+        echo "  FileProviderDomain guards applied"
+    else
+        echo "  Warning: FileProviderDomain.swift not found"
+    fi
+
+    if [ -f "$MIGRATION_FILE" ]; then
+        python3 - "$MIGRATION_FILE" << 'PY'
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    data = fh.read()
+
+if "FileProviderAvailability.isAvailable" in data:
+    sys.exit(0)
+
+pattern = re.compile(r'(^[ \t]*)private func deleteFileProviderStorage\(\) \{', re.M)
+match = pattern.search(data)
+if not match:
+    sys.exit(0)
+
+indent = match.group(1)
+inner_indent = indent + "  "
+guard_block = (
+    "\n"
+    f"{inner_indent}guard FileProviderAvailability.isAvailable else {{\n"
+    f"{inner_indent}  return\n"
+    f"{inner_indent}}}\n"
+)
+
+data = data[:match.end()] + guard_block + data[match.end():]
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(data)
+PY
+        echo "  Migrator FileProvider guard applied"
+    else
+        echo "  Warning: 1810Migration.swift not found"
+    fi
+
+    if [ -f "$APP_DELEGATE" ]; then
+        python3 - "$APP_DELEGATE" << 'PY'
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    data = fh.read()
+
+if "FileProviderAvailability isAvailable" in data:
+    sys.exit(0)
+
+lines = data.splitlines(keepends=True)
+for idx, line in enumerate(lines):
+    if "_NSFileProviderManager syncWithBKHosts" in line:
+        indent = re.match(r"[ \t]*", line).group(0)
+        lines[idx:idx + 1] = [
+            f"{indent}if ([FileProviderAvailability isAvailable]) {{\n",
+            f"{indent}  [_NSFileProviderManager syncWithBKHosts];\n",
+            f"{indent}}}\n",
+        ]
+        break
+else:
+    sys.exit(0)
+
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write("".join(lines))
+PY
+        echo "  AppDelegate FileProvider guard applied"
+    else
+        echo "  Warning: AppDelegate.m not found"
+    fi
+}
+
 # Function to fix get_resources.sh for repeated runs
 fix_get_resources_script() {
     local SCRIPT_FILE="${SOURCE_DIR}/get_resources.sh"
@@ -318,6 +483,47 @@ fix_get_resources_script() {
         echo "Fixing get_resources.sh for repeated runs..."
         sed -i '' 's/unzip runtime.zip && mv runtime\/\* .\/ && rm runtime.zip/unzip -o runtime.zip \&\& cp -rf runtime\/* .\/ \&\& rm -rf runtime runtime.zip/' "$SCRIPT_FILE"
     fi
+}
+
+# Inject SideloadFix.dylib from https://github.com/waruhachi/SideloadFix
+# Fixes App Group containers and keychain access for sideloaded apps
+inject_sideload_fix() {
+    local APP_BUNDLE="$1"
+    local APP_NAME=$(basename "$APP_BUNDLE" .app)
+    local FRAMEWORKS_DIR="$APP_BUNDLE/Frameworks"
+    local DYLIB_URL="https://github.com/waruhachi/SideloadFix/releases/download/release/SideloadFix.dylib"
+    local DYLIB_PATH="${SCRIPT_DIR}/.cache/SideloadFix.dylib"
+    local INSERT_DYLIB="${SCRIPT_DIR}/.cache/insert_dylib"
+
+    echo "Injecting SideloadFix.dylib..."
+    mkdir -p "${SCRIPT_DIR}/.cache"
+
+    # Download SideloadFix.dylib if not cached
+    if [ ! -f "$DYLIB_PATH" ]; then
+        echo "  Downloading SideloadFix.dylib..."
+        curl -sL "$DYLIB_URL" -o "$DYLIB_PATH"
+    fi
+
+    # Build insert_dylib if not cached
+    if [ ! -f "$INSERT_DYLIB" ]; then
+        echo "  Building insert_dylib..."
+        local TEMP_DIR=$(mktemp -d)
+        git clone --depth 1 https://github.com/tyilo/insert_dylib.git "$TEMP_DIR" 2>/dev/null
+        clang -o "$INSERT_DYLIB" "$TEMP_DIR/insert_dylib/main.c" -framework Foundation 2>/dev/null
+        rm -rf "$TEMP_DIR"
+    fi
+
+    # Copy dylib to Frameworks
+    mkdir -p "$FRAMEWORKS_DIR"
+    cp "$DYLIB_PATH" "$FRAMEWORKS_DIR/"
+
+    # Inject load command
+    chmod +x "$INSERT_DYLIB"
+    "$INSERT_DYLIB" --strip-codesig --inplace \
+        "@executable_path/Frameworks/SideloadFix.dylib" \
+        "$APP_BUNDLE/$APP_NAME" 2>/dev/null || true
+
+    echo "  Injected SideloadFix.dylib"
 }
 
 # Function to create sideload-friendly entitlements
@@ -393,6 +599,8 @@ setup_repository() {
 
             fix_package_dependencies
             patch_remove_paywall
+            patch_skip_migrator
+            patch_fileprovider_sideload
             create_sideload_entitlements
             return 0
         fi
@@ -420,6 +628,8 @@ setup_repository() {
 
     fix_package_dependencies
     patch_remove_paywall
+    patch_skip_migrator
+    patch_fileprovider_sideload
     create_sideload_entitlements
 }
 
@@ -579,6 +789,9 @@ build_app() {
             # Remove app extensions that require entitlements incompatible with sideloading
             echo "Removing incompatible app extensions..."
             rm -rf "$PAYLOAD_DIR/Blink.app/PlugIns"
+
+            # Inject SideloadFix.dylib for App Group and keychain fixes
+            inject_sideload_fix "$PAYLOAD_DIR/Blink.app"
 
             # Create .ipa (which is just a zip file)
             cd "$BUILD_DIR"
