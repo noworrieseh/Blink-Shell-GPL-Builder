@@ -15,6 +15,7 @@
 #   --clean                  Clean build before building
 #   --clean-all              Remove source and build directories
 #   --unsigned-ipa           Build unsigned .ipa (default)
+#   --signed-ipa             Build signed .ipa
 #   --archive                Build signed archive (requires dev account)
 #   --simulator [<name|id>]  Build and run in iOS Simulator
 #   --install [<name|id>]    Build and install to connected device (requires dev account)
@@ -64,6 +65,7 @@ BUNDLE_ID=""
 # Option Settings
 SETUP_ONLY=false
 DO_UNSIGNED_IPA=true
+DO_SIGNED_IPA=false
 DO_ARCHIVE=false
 DO_INSTALL=false
 DO_SIMULATOR=false
@@ -98,6 +100,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --unsigned-ipa)
             DO_UNSIGNED_IPA=true
+            ;;
+        --signed-ipa)
+            DO_SIGNED_IPA=true
+            DO_UNSIGNED_IPA=false
             ;;
         --archive)
             DO_ARCHIVE=true
@@ -876,6 +882,8 @@ build_app() {
     local SIGNED=false
     local APP_FILTER=".*"
     local OUT_DIR=""
+    local PLATFORM="iphoneos"
+
 
     echo ""
     echo "Building Blink Shell..."
@@ -916,7 +924,6 @@ build_app() {
         fi
 
         # Setup build
-        PLATFORM="iphoneos"
         if [[ $DO_SIMULATOR == true ]]; then
             PLATFORM="iphonesimulator"
             xcrun simctl boot "${DEVICE_ID}" 2>/dev/null || true
@@ -943,10 +950,9 @@ build_app() {
         CONF="${CONF_RELEASE}"
         IPA="${APP_NAME}-unsigned-${VERSION}.ipa"
         DIST="${OUTPUT_DIR}/${IPA}"
-        PAYLOAD_DIR="${BUILD_DIR}/Payload"
-        OUT_DIR="Products"
+        OUT_DIR="DerivedData/Build/Products/${CONF}-${PLATFORM}"
 
-        EXTRA_FLAGS="CONFIGURATION_BUILD_DIR="${BUILD_DIR}/Products"
+        EXTRA_FLAGS="
             CODE_SIGN_IDENTITY=\"-\"
             CODE_SIGNING_REQUIRED=NO
             CODE_SIGNING_ALLOWED=NO
@@ -954,10 +960,12 @@ build_app() {
             DEAD_CODE_STRIPPING=NO
             ENABLE_PREVIEWS=NO"
 
-        rm -rf "$PAYLOAD_DIR"
-        echo "Payload: $PAYLOAD_DIR"
-        mkdir -p "$PAYLOAD_DIR"
-
+    elif [[ $DO_SIGNED_IPA == true ]]; then
+        CONF="${CONF_RELEASE}"
+        IPA="${APP_NAME}-signed-${VERSION}.ipa"
+        DIST="${OUTPUT_DIR}/${IPA}"
+        OUT_DIR="DerivedData/Build/Products/${CONF}-${PLATFORM}"
+        SIGNED=true
     fi
 
     # Load Build identifiers
@@ -1037,15 +1045,23 @@ build_app() {
 
         echo "Blink launched on device"
 
-    elif [[ $DO_UNSIGNED_IPA == true ]]; then
+    elif [[ $DO_UNSIGNED_IPA == true || $DO_SIGNED_IPA == true ]]; then
+        PAYLOAD_DIR="${BUILD_DIR}/Payload"
+        rm -rf "$PAYLOAD_DIR"
+        mkdir -p "$PAYLOAD_DIR"
+
         cp -r "${APP_PATH}" "${PAYLOAD_DIR}/"
 
-        # Remove app extensions that require entitlements incompatible with sideloading
-        echo "Removing incompatible app extensions..."
-        rm -rf "${PAYLOAD_DIR}/Blink.app/PlugIns"
+        if [[ $DO_UNSIGNED_IPA == true ]]; then
 
-        # Inject SideloadFix.dylib for App Group and keychain fixes
-        inject_sideload_fix "${PAYLOAD_DIR}/Blink.app"
+            # Remove app extensions that require entitlements incompatible with sideloading
+            echo "Removing incompatible app extensions..."
+            rm -rf "${PAYLOAD_DIR}/Blink.app/PlugIns"
+
+            # Inject SideloadFix.dylib for App Group and keychain fixes
+            inject_sideload_fix "${PAYLOAD_DIR}/Blink.app"
+
+        fi
 
         # Create .ipa (which is just a zip file)
         (cd "${BUILD_DIR}" && zip -r -q "${IPA}" Payload)
