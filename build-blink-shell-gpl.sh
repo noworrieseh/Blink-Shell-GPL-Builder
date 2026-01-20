@@ -1,105 +1,174 @@
 #!/bin/bash
-set -e
 
+# HELP_START
 # Blink Shell Build Script
 # Builds unsigned .ipa for sideloading via signing services
 #
 # Usage:
-#   ./build-blink-shell-gpl.sh [options] [version]
+#   ./build-blink-shell-gpl.sh [options]
 #
 # Options:
-#   --setup-only     Only setup/clone, don't build
-#   --build          Build unsigned .ipa (default)
-#   --clean          Clean build before building
-#   --simulator      Build and run in iOS Simulator
-#   --archive        Create signed archive (requires dev account)
-#   --install        Build and install to connected device (requires dev account)
-#   --keep-build     Keep build-output/ after a successful build
-#   --keep-source    Keep blink-src/ after a successful build
-#   --non-interactive Skip prompts and reuse existing blink-src/
-#   --help           Show this help message
+#   --version <version>      Version to checkout.  Default: v18.4.2
+#   --setup-only             Only setup/clone, don't build
+#   --update                 Update existing source
+#   --overwrite              Overwrite existing source
+#   --clean                  Clean build before building
+#   --clean-all              Remove source and build directories
+#   --unsigned-ipa           Build unsigned .ipa (default)
+#   --archive                Build signed archive (requires dev account)
+#   --simulator [<name|id>]  Build and run in iOS Simulator
+#   --install [<name|id>]    Build and install to connected device (requires dev account)
+#   --keep-build             Keep build-output/ after a successful build
+#   --keep-source            Keep blink-src/ after a successful build
+#   --simulators             List compatible simulators (requires blink src)
+#   --devices                List compatible devices (requires blink src)
+#   --help                   Show this help message
 #
 # Examples:
 #   ./build-blink-shell-gpl.sh                    # Build unsigned .ipa
 #   ./build-blink-shell-gpl.sh v18.4.2            # Build specific version
 #   ./build-blink-shell-gpl.sh --setup-only       # Only setup, don't build
 #   ./build-blink-shell-gpl.sh --clean            # Clean build
+# HELP_END
 
+# Constants
+PAT_DEVID="^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$"
+PAT_UUID="^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{6}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$"
+CONF_RELEASE="Release"
+CONF_DEBUG="Debug"
+PLIST="/usr/libexec/PlistBuddy"
+PLISTJ="plutil -convert json -o -"
+
+# Locations
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-VERSION="v18.4.2"
 SOURCE_DIR="${SCRIPT_DIR}/blink-src"
 BUILD_DIR="${SCRIPT_DIR}/build-output"
+BUILD_LOG="${BUILD_DIR}/build.log"
 OUTPUT_DIR="${SCRIPT_DIR}/dist"
-OUTPUT_ARCHIVE_PATH=""
-OUTPUT_IPA_PATH=""
-SCHEME="Blink"
 PROJECT="${SOURCE_DIR}/Blink.xcodeproj"
+PROJECT_FILE="${PROJECT}/project.pbxproj"
+DEVSETUP="${SOURCE_DIR}/developer_setup.xcconfig"
+XCLIST="${BUILD_DIR}/xclist"
+XCSHARED="${PROJECT}/project.xcworkspace/xcshareddata"
 
-# Options
+# Global Variables
+BLINK_REPO="https://github.com/blinksh/blink.git"
+VERSION="v18.4.2"
+SCHEME="Blink"
+DEVICE=""
+TEMPLATE=""
+MIN_PLATFORM=""
+TEAM_ID=""
+BUNDLE_ID=""
+
+# Option Settings
 SETUP_ONLY=false
-DO_BUILD=true
-DO_CLEAN=false
+DO_UNSIGNED_IPA=true
 DO_ARCHIVE=false
 DO_INSTALL=false
 DO_SIMULATOR=false
-KEEP_BUILD=false
-KEEP_SOURCE=false
-NON_INTERACTIVE=false
+LIST_DEVICES=false
+LIST_SIMS=false
+
+BUILD_CLEAN=false
+BUILD_KEEP=false
+
+SOURCE_UPDATE=false
+SOURCE_OVERWRITE=false
+SOURCE_KEEP=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
         --setup-only)
             SETUP_ONLY=true
-            DO_BUILD=false
-            shift
             ;;
-        --build)
-            DO_BUILD=true
-            shift
+        --update)
+            SOURCE_UPDATE=true
+            ;;
+        --overwrite)
+            SOURCE_OVERWRITE=true
             ;;
         --clean)
             DO_CLEAN=true
-            shift
+            ;;
+        --clean-all)
+            rm -fr "${SOURCE_DIR}" "${BUILD_DIR}" 2>/dev/null
+            exit 0
+            ;;
+        --unsigned-ipa)
+            DO_UNSIGNED_IPA=true
             ;;
         --archive)
             DO_ARCHIVE=true
-            shift
+            DO_UNSIGNED_IPA=false
             ;;
         --install)
             DO_INSTALL=true
+            DO_UNSIGNED_IPA=false
             shift
+            # Check for optional device name/id
+            if [[ $# -gt 0 && "$1" != "--"* ]]; then
+                DEVICE="$1"
+            else
+                continue
+            fi
             ;;
         --simulator)
             DO_SIMULATOR=true
-            DO_BUILD=false
+            DO_UNSIGNED_IPA=false
             shift
+            # Check for optional simulator name/id
+            if [[ $# -gt 0 && "$1" != "--"* ]]; then
+                DEVICE="$1"
+            else
+                continue
+            fi
+            ;;
+        --dev)
+            shift
+            if [[ $# -gt 0 && "$1" != "--"* && -e "$1" ]]; then
+                FILE="$1"
+                if [[ ! -f $FILE ]]; then
+                    echo "Template file not exist"
+                    exit 1
+                fi
+                TEMPLATE=$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")
+            else
+                echo "Template file required"
+                exit 1
+            fi
             ;;
         --keep-build)
-            KEEP_BUILD=true
-            shift
+            BUILD_KEEP=true
             ;;
         --keep-source)
-            KEEP_SOURCE=true
-            shift
+            SOURCE_KEEP=true
             ;;
-        --non-interactive)
-            NON_INTERACTIVE=true
-            shift
+        --devices)
+            LIST_DEVICES=true
+            ;;
+        --simulators)
+            LIST_SIMS=true
             ;;
         --help)
-            head -26 "$0" | tail -23
+            awk '/# HELP_START/{flag=1;next} /# HELP_END/{exit} flag' $0
             exit 0
             ;;
-        v*)
-            VERSION="$1"
+        --version)
             shift
+            if [[ $# -eq 0 || "$1" == "--"* ]]; then
+                echo "Missing <version> to select"
+                exit 1
+            fi
+            VERSION="$1"
             ;;
         *)
             echo "Unknown option: $1"
             exit 1
             ;;
     esac
+    shift
 done
 
 echo "=================================="
@@ -109,24 +178,164 @@ echo "Version: $VERSION"
 echo "Source directory: $SOURCE_DIR"
 echo ""
 
+# device_search <simulator> <field> <name> <result>
+# SIMULATOR: true|false.  false==device
+# FIELD: Data field to query
+# NAME: Regexp of val to search for
+# RESULT: id|list
+# Global: BUILD_DIR, CONF_DEBUG, PROJECT_FILE, XCLIST, MIN_PLATFORM
+device_search() {
+
+    local SIMULATOR=$1
+    local FIELD=$2
+    local NAME=$3
+    local RESULT=$4
+
+    if [[ ! -f $XCLIST ]]; then
+        mkdir -p "$BUILD_DIR"
+        xcrun xcdevice list > "$XCLIST"
+    fi
+    if [[ -z $MIN_PLATFORM ]]; then
+        BLINK_DEBUG=$(find_target ${CONF_DEBUG} Blink ${PROJECT_FILE})
+        MIN_PLATFORM=$(plist_get ":objects:${BLINK_DEBUG}:buildSettings:IPHONEOS_DEPLOYMENT_TARGET" ${PROJECT_FILE})
+        if [[ -z $MIN_PLATFORM ]]; then
+            echo "Problem identifying the minimum supported platform in project"
+            exit 1
+        fi
+    fi
+    local lookup=$(cat $XCLIST | jq -r \
+        --arg simulator "$SIMULATOR" \
+        --arg field "$FIELD" \
+        --arg name "$NAME" \
+        --arg result "$RESULT" \
+        --arg min "$MIN_PLATFORM" \
+            'sort_by(.operatingSystemVersion) |
+            [ .[] |
+                select(
+                .simulator == ($simulator == "true") and
+                (.platform | contains("iphone")) and
+                ((.operatingSystemVersion | split(" ") | .[0] | tonumber) >= ($min | tonumber)) and
+                (.[$field] | test($name; "i"))
+                )
+            ] |
+            if $result == "id" then
+                last | .identifier | select(. != null)
+            elif $result == "list" then
+                .[] | [.identifier, .operatingSystemVersion, .name ] | @tsv
+            else
+                .
+            end
+        ')
+    echo "$lookup"
+}
+
+# find_plist_entry <field> <regexp> <filter> [<plist>]
+find_plist_entry() {
+    local FIELD=$1
+    local REGEXP=$2
+    local FILTER=$3
+    local FILE=${4:-$PROJECT_FILE}
+
+    if [[ -n $FILTER ]]; then
+        FILTER="and $FILTER"
+    fi
+
+    local id=$($PLISTJ "${FILE}" | jq -r \
+        ".. | objects | to_entries[] |
+        select(((.value.[\"$FIELD\"]? | tostring) | test(\"$REGEXP\"))
+        $FILTER) | .key")
+    echo $id
+}
+
+# find_resource <field> <resource>
+# FIELD: Field to search on
+# RES: Suffix of value to search on
+find_resource() {
+    local FIELD=$1
+    local RES=$2
+    local id=$(find_plist_entry "${FIELD}" ".*${RES}" )
+    echo $id
+}
+
+# find_target <target> <name>
+# TARGET: Debug or Release
+# NAME: Name of product
+find_target() {
+    local TARGET=$1
+    local NAME=$2
+    local id=$(find_plist_entry "name" "$TARGET" \
+        ".value.buildSettings?.PRODUCT_NAME? == \"$NAME\"")
+    echo $id
+}
+
+# plist_set <resource> <value> [<file>]
+# Notes: if it doesnt exist, it will be defined as a string
+# RES: Resource tree to set
+# VAL: Value to set
+# FILE: plist file
+plist_set() {
+    local RES=$1
+    local VAL=$2
+    local FILE=${3:-$PROJECT_FILE}
+    if $PLIST -c "Print $RES" ${FILE} 2>/dev/null >/dev/null; then
+        $PLIST -c "Set $RES $VAL" ${FILE} 2>/dev/null >/dev/null
+    else
+        $PLIST -c "Add $RES string $VAL" ${FILE} 2>/dev/null >/dev/null
+    fi
+}
+
+# plist_del <resource> [<file>]
+# Notes: if it doesnt exist, the change is ignored
+# RES: Resource tree to delete
+# FILE: plist file
+plist_del() {
+    local RES=$1
+    local FILE=${2:-$PROJECT_FILE}
+    if $PLIST -c "Print $RES" ${FILE} 2>/dev/null >/dev/null; then
+        $PLIST -c "Delete $RES" ${FILE} 2>/dev/null >/dev/null
+    fi
+}
+
+# plist_get <resource> [<file>]
+# RES: Resource tree to lookup
+# FILE: plist file
+plist_get() {
+    local RES=$1
+    local FILE=${2:-$PROJECT_FILE}
+    local RESULT=$($PLIST -c "Print $RES" ${FILE} 2>/dev/null)
+    echo $RESULT
+}
+
+# Get configuration setting for developer config
+# FIELD: The field to lookup
+# FILE: developer config file
+get_config() {
+    local FIELD=$1
+    local FILE=${2:-$DEVSETUP}
+    local RESULT=$(awk -v field="$FIELD" '!/\/\// && $0 ~ field {print $3}' ${FILE})
+    echo $RESULT
+}
+
+# Search for existing provisioning profile that match TEAM_ID/BUNDLE_ID
+# Depends on global TEAM_ID and BUNDLE_ID
+get_profile() {
+    if [ -z "$TEAM_ID" -o -z "$BUNDLE_ID" ]; then
+        return ""
+    fi
+    PROFILE=$(grep -l "${TEAM_ID}.${BUNDLE_ID}<" ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision | head -n 1)
+    echo $PROFILE
+}
+
 # Preflight checks
 preflight_checks() {
     local missing=0
 
-    if ! command -v git &> /dev/null; then
-        echo "Error: git is required but not found."
-        missing=1
-    fi
-
-    if ! command -v python3 &> /dev/null; then
-        echo "Error: python3 is required but not found."
-        missing=1
-    fi
-
-    if ! command -v xcodebuild &> /dev/null; then
-        echo "Error: Xcode is required. Install Xcode and run xcode-select --install."
-        missing=1
-    fi
+    for cmd in git python3 grep sed awk jq plutil xcodebuild $PLIST; do
+        if ! command -v $cmd &>/dev/null; then
+            echo "Error: $cmd is required but not found."
+            missing=1
+        fi
+    done
 
     if ! xcode-select -p &> /dev/null; then
         echo "Error: Xcode Command Line Tools not configured. Run xcode-select --install."
@@ -138,7 +347,7 @@ preflight_checks() {
         missing=1
     fi
 
-    if [ "$DO_SIMULATOR" = true ]; then
+    if [[ $DO_SIMULATOR == true ]]; then
         if ! xcrun --sdk iphonesimulator --show-sdk-path &> /dev/null; then
             echo "Error: iOS Simulator platform content is missing."
             echo "Install it in Xcode > Settings > Platforms."
@@ -155,31 +364,24 @@ preflight_checks() {
 fix_package_dependencies() {
     echo "Fixing package dependencies..."
 
-    # Fix swiftui-cached-async-image (main branch has broken Package.swift)
-    if grep -q 'XCRemoteSwiftPackageReference "swiftui-cached-async-image"' "${PROJECT}/project.pbxproj" 2>/dev/null; then
-        sed -i '' '/XCRemoteSwiftPackageReference "swiftui-cached-async-image"/,/};/{
-            s/branch = main;/kind = upToNextMajorVersion;/
-            s/kind = branch;/minimumVersion = 1.9.0;/
-            s/minimumVersion = [0-9.][0-9.]*;/minimumVersion = 1.9.0;/
-        }' "${PROJECT}/project.pbxproj"
-        echo "  Fixed swiftui-cached-async-image package"
-    fi
-
-    # Fix SwiftCBOR (master branch tracking causes issues)
-    if grep -q 'XCRemoteSwiftPackageReference "SwiftCBOR"' "${PROJECT}/project.pbxproj" 2>/dev/null; then
-        sed -i '' '/XCRemoteSwiftPackageReference "SwiftCBOR"/,/};/{
-            s/branch = master;/kind = upToNextMajorVersion;/
-            s/kind = branch;/minimumVersion = 0.4.0;/
-            s/minimumVersion = [0-9.][0-9.]*;/minimumVersion = 0.4.0;/
-        }' "${PROJECT}/project.pbxproj"
-        echo "  Fixed SwiftCBOR package"
-    fi
+    for pkg in "swiftui-cached-async-image 1.9.0" "SwiftCBOR 0.4.0"; do
+        array=($pkg)
+        resource=$(find_resource "repositoryURL" "${array[0]}")
+        if [ -n "$resource" ]; then
+            req=":objects:$resource:requirement"
+            plist_set "$req:kind" "upToNextMajorVersion" ${PROJECT_FILE}
+            plist_set "$req:minimumVersion" "${array[1]}" ${PROJECT_FILE}
+            plist_del "$req:branch" ${PROJECT_FILE}
+            echo "  Fixed $pkg package"
+        else
+            echo "  Unable to fix $pkg package"
+        fi
+    done
 
     # Clear SPM cache to avoid stale manifests
     rm -rf ~/Library/Caches/org.swift.swiftpm/manifests 2>/dev/null || true
-    rm -rf "${SOURCE_DIR}/Blink.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved" 2>/dev/null || true
+    rm -rf "${XCSHARED}/swiftpm/Package.resolved" 2>/dev/null || true
 }
-
 
 # Function to remove paywall (GPL sideload build)
 patch_remove_paywall() {
@@ -481,8 +683,13 @@ fix_get_resources_script() {
 
     if [ -f "$SCRIPT_FILE" ] && grep -q 'mv runtime/\*' "$SCRIPT_FILE" 2>/dev/null; then
         echo "Fixing get_resources.sh for repeated runs..."
-        sed -i '' 's/unzip runtime.zip && mv runtime\/\* .\/ && rm runtime.zip/unzip -o runtime.zip \&\& cp -rf runtime\/* .\/ \&\& rm -rf runtime runtime.zip/' "$SCRIPT_FILE"
+        sed -i '' 's/unzip runtime.zip && mv runtime\/\* .\/ && rm runtime.zip/unzip -q -o runtime.zip \&\& cp -rf runtime\/* .\/ \&\& rm -rf runtime runtime.zip/' "$SCRIPT_FILE"
     fi
+}
+
+fix_team_id() {
+    echo "Fixing TEAM_ID in project"
+    gsed -i 's/A2H2CL32AG/${TEAM_ID}/g' ${PROJECT_FILE}
 }
 
 # Inject SideloadFix.dylib from https://github.com/waruhachi/SideloadFix
@@ -562,22 +769,12 @@ ENTITLEMENTS_EOF
 
 # Function to setup/clone repository
 setup_repository() {
-    if [ -d "$SOURCE_DIR" ]; then
-        echo "Source directory already exists."
-        if [ "$NON_INTERACTIVE" = true ]; then
-            echo "Non-interactive mode: using existing source directory."
-        else
-            read -p "Do you want to clean and re-clone? (y/N) " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                echo "Removing existing source directory..."
-                rm -rf "$SOURCE_DIR"
-            else
-                echo "Using existing source directory..."
-            fi
-        fi
 
-        if [ -d "$SOURCE_DIR" ]; then
+    # Check for existing source tree
+    if [ -d "$SOURCE_DIR" ]; then
+
+        # Do Update
+        if [[ $SOURCE_UPDATE == true ]]; then
             cd "$SOURCE_DIR"
 
             echo "Fetching latest changes..."
@@ -586,28 +783,30 @@ setup_repository() {
             echo "Checking out $VERSION..."
             git checkout "$VERSION"
             git submodule update --init --recursive
+            cd ..
 
-            echo "Running framework setup..."
-            ./get_frameworks.sh
+        # Check for overwrite
+        elif [[ $SOURCE_OVERWRITE == true ]]; then
+            echo "Removing existing source directory..."
+            rm -rf "$SOURCE_DIR"
 
-            fix_get_resources_script
-            echo "Running resource setup..."
-            ./get_resources.sh
-
-            echo "Cleaning Xcode workspace..."
-            rm -rf Blink.xcodeproj/project.xcworkspace/xcshareddata/
-
-            fix_package_dependencies
-            patch_remove_paywall
-            patch_skip_migrator
-            patch_fileprovider_sideload
-            create_sideload_entitlements
+        # Use existing
+        else
+            echo "Using existing source directory."
+            if [[ -n $TEMPLATE ]]; then
+                echo "Using provided developer config..."
+                cp "${TEMPLATE}" "${DEVSETUP}"
+            fi
             return 0
+
         fi
     fi
 
-    echo "Cloning Blink repository (version: $VERSION)..."
-    git clone --recursive --branch "$VERSION" https://github.com/blinksh/blink.git "$SOURCE_DIR"
+    # Clone repo
+    if [ ! -d "$SOURCE_DIR" ]; then
+        echo "Cloning Blink repository (version: $VERSION)..."
+        git clone --recursive --branch "$VERSION" "$BLINK_REPO" "$SOURCE_DIR"
+    fi
 
     cd "$SOURCE_DIR"
 
@@ -618,19 +817,30 @@ setup_repository() {
     echo "Running resource setup..."
     ./get_resources.sh
 
-    if [ ! -f "developer_setup.xcconfig" ]; then
+    if [[ -n $TEMPLATE ]]; then
+        echo "Using provided developer config..."
+        cp "${TEMPLATE}" "${DEVSETUP}"
+
+    elif [ ! -f "developer_setup.xcconfig" ]; then
         echo "Creating developer_setup.xcconfig from template..."
         cp template_setup.xcconfig developer_setup.xcconfig
     fi
 
+    # Reset XCLIST
+    rm -f "${XCLIST}"
+
     echo "Cleaning Xcode workspace..."
-    rm -rf Blink.xcodeproj/project.xcworkspace/xcshareddata/
+    rm -rf "${XCSHARED}"
 
     fix_package_dependencies
+    fix_team_id
     patch_remove_paywall
     patch_skip_migrator
     patch_fileprovider_sideload
     create_sideload_entitlements
+
+    resolve_packages
+
 }
 
 # Function to resolve packages
@@ -645,177 +855,214 @@ resolve_packages() {
 
 # Function to run xcodebuild with optional xcpretty
 run_xcodebuild() {
+    rm -f "${BUILD_LOG}"
+    echo $* | tee -a "${BUILD_LOG}"
     if command -v xcpretty &> /dev/null; then
-        "$@" 2>&1 | xcpretty
+        "$@" 2>&1 | xcpretty | tee -a "${BUILD_LOG}"
     else
-        "$@"
+        "$@" 2>&1 | tee -a "${BUILD_LOG}"
     fi
 }
 
 # Function to build
 build_app() {
-    local EXTRA_FLAGS=""
-
-    if [ "$DO_CLEAN" = true ]; then
-        EXTRA_FLAGS="clean build"
-    else
-        EXTRA_FLAGS="build"
-    fi
+    local EXTRA_FLAGS="ENABLE_DEBUG_DYLIB=NO"
+    local BUILD_CMDS="build"
+    local DEST="generic/platform=iOS"
+    local CONF="${CONF_DEBUG}"
+    local APP_NAME="Blink"
+    local APP="${APP_NAME}.app"
+    local DIST=""
+    local SIGNED=false
+    local APP_FILTER=".*"
+    local OUT_DIR=""
 
     echo ""
     echo "Building Blink Shell..."
     echo ""
 
-    mkdir -p "$BUILD_DIR"
+    mkdir -p "${BUILD_DIR}"
 
-    if [ "$DO_SIMULATOR" = true ]; then
-        # Build and run in iOS Simulator
-        echo "Building for iOS Simulator..."
+    # Setup simulator and device install
+    if [[ $DO_SIMULATOR == true ||$DO_INSTALL == true ]]; then
+        if [ -n "$DEVICE" ]; then
 
-        # Boot simulator if needed
-        SIMULATOR_ID=$(xcrun simctl list devices available | grep -E "iPhone (15|16)" | head -1 | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/')
+            # Identifier search
+            if [[ ($DO_SIMULATOR == true && $DEVICE =~ $PAT_UUID) ||\
+                    ($DO_INSTALL == true && $DEVICE =~ $PAT_DEVID) ]]; then
+                DEVICE_ID=$(device_search "$DO_SIMULATOR" "identifier" "$DEVICE" "id")
 
-        if [ -z "$SIMULATOR_ID" ]; then
-            echo "No suitable iPhone simulator found. Creating one..."
-            SIMULATOR_ID=$(xcrun simctl create "iPhone 15" "com.apple.CoreSimulator.SimDeviceType.iPhone-15")
+            # Name search
+            else
+                ESCAPED=$(echo "$DEVICE" | gsed 's/[.()*]/\\&/g')
+                DEVICE_ID=$(device_search "$DO_SIMULATOR" "name" "$ESCAPED" "id")
+            fi
         fi
 
-        echo "Using simulator: $SIMULATOR_ID"
-        xcrun simctl boot "$SIMULATOR_ID" 2>/dev/null || true
+        # General Search for IOS device
+        if [[ -z $DEVICE_ID ]]; then
+            DEVICE_ID=$(device_search "$DO_SIMULATOR" "platform" ".*iphone.*" "id")
+        fi
 
-        run_xcodebuild xcodebuild \
-            -project "$PROJECT" \
-            -scheme "$SCHEME" \
-            -destination "id=$SIMULATOR_ID" \
-            -derivedDataPath "${BUILD_DIR}/DerivedData" \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            ENABLE_DEBUG_DYLIB=NO \
-            $EXTRA_FLAGS
+        # Create Simulator
+        if [[ -z $DEVICE_ID ]]; then
+            if [[ $DO_SIMULATOR == true ]]; then
+                echo "No suitable iPhone simulator found. Creating one..."
+                DEVICE_ID=$(xcrun simctl create "iPhone 15" "com.apple.CoreSimulator.SimDeviceType.iPhone-15")
+            else
+                echo "Error: No iOS device connected. Please connect a device and try again."
+                exit 1
+            fi
+        fi
 
-        # Open Simulator and launch app
+        # Setup build
+        PLATFORM="iphoneos"
+        if [[ $DO_SIMULATOR == true ]]; then
+            PLATFORM="iphonesimulator"
+            xcrun simctl boot "${DEVICE_ID}" 2>/dev/null || true
+        else
+            SIGNED=true
+            EXTRA_FLAGS="-allowProvisioningUpdates ${EXTRA_FLAGS}"
+        fi
+        OUT_DIR="DerivedData/Build/Products/${CONF}-${PLATFORM}"
+
+        echo "Selected device: $DEVICE_ID"
+        DEST="id=$DEVICE_ID"
+
+    # Setup archive
+    elif [[ $DO_ARCHIVE == true ]]; then
+        CONF="${CONF_RELEASE}"
+        SIGNED=true
+        APP="${APP_NAME}-${VERSION}.xcarchive"
+        DIST="${OUTPUT_DIR}/${APP}"
+        EXTRA_FLAGS="-archivePath ${BUILD_DIR}/${APP}"
+        BUILD_CMDS="archive"
+
+    # Setup unsigned ipa
+    elif [[ $DO_UNSIGNED_IPA == true ]]; then
+        CONF="${CONF_RELEASE}"
+        IPA="${APP_NAME}-unsigned-${VERSION}.ipa"
+        DIST="${OUTPUT_DIR}/${IPA}"
+        PAYLOAD_DIR="${BUILD_DIR}/Payload"
+        OUT_DIR="Products"
+
+        EXTRA_FLAGS="CONFIGURATION_BUILD_DIR="${BUILD_DIR}/Products"
+            CODE_SIGN_IDENTITY=\"-\"
+            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGN_ENTITLEMENTS=\"${SOURCE_DIR}/Blink/Blink-sideload.entitlements\"
+            DEAD_CODE_STRIPPING=NO
+            ENABLE_PREVIEWS=NO"
+
+        rm -rf "$PAYLOAD_DIR"
+        echo "Payload: $PAYLOAD_DIR"
+        mkdir -p "$PAYLOAD_DIR"
+
+    fi
+
+    # Load Build identifiers
+    TEAM_ID=$(get_config "TEAM_ID" ${DEVSETUP})
+    BUNDLE_ID=$(get_config "BUNDLE_ID" ${DEVSETUP})
+    if [ -z "$TEAM_ID" -o -z "$BUNDLE_ID" ]; then
+        echo "Unable to locate TEAM_ID or BUNDLE_ID..."
+        exit 1
+    fi
+    echo "Building for ${TEAM_ID}/${BUNDLE_ID}..."
+
+    if [[ $SIGNED == true ]]; then
+        echo "Checking provisioning for signed build"
+        PROFILE=$(get_profile ${DEVSETUP})
+        if [[ -z $PROFILE ]]; then
+            echo "Missing provisioning profile for signed build"
+            exit 1
+        fi
+        echo "Identified profile ${PROFILE##*/}"
+        security cms -D -i "$PROFILE" > $BUILD_DIR/profile
+        CHK=$(plist_get ":Entitlements:com.apple.developer.web-browser" $BUILD_DIR/profile)
+        if [[ -z $CHK ]]; then
+            echo "Removing web-browser entitlement"
+            plist_del "com.apple.developer.web-browser" ${SOURCE_DIR}/Blink/Blink.entitlements
+        fi
+    fi
+
+    if [[ $DO_CLEAN == true ]]; then
+        BUILD_CMDS="clean ${BUILD_CMDS}"
+    fi
+
+    run_xcodebuild xcodebuild \
+        -project "$PROJECT" \
+        -scheme "$SCHEME" \
+        -configuration "$CONF" \
+        -destination "$DEST" \
+        -derivedDataPath "${BUILD_DIR}/DerivedData" \
+        -skipPackagePluginValidation \
+        -skipMacroValidation \
+        $EXTRA_FLAGS \
+        $BUILD_CMDS
+
+    # Locate Generated Build
+    APP_PATH=$(find "${BUILD_DIR}/${OUT_DIR}" -name "${APP}")
+    if [[ -z $APP_PATH ]]; then
+        echo "Unable to locate ${APP} build"
+        exit 1
+    fi
+    echo "Build: ${APP_PATH}"
+
+    # Post-build steps
+    if [[ $DO_SIMULATOR == true ]]; then
+        echo "Installing to simulator: ${DEVICE_ID}"
         open -a Simulator
         sleep 2
-
-        # Find and install the app
-        APP_PATH=$(find "${BUILD_DIR}/DerivedData" -name "Blink.app" -path "*Debug-iphonesimulator*" | head -1)
-        if [ -n "$APP_PATH" ]; then
-            xcrun simctl install "$SIMULATOR_ID" "$APP_PATH"
-            xcrun simctl launch "$SIMULATOR_ID" sh.blink.blinkshell
-            echo "Blink launched in simulator"
-        else
-            echo "Error: Could not find simulator build"
+        xcrun simctl install "${DEVICE_ID}" "${APP_PATH}"
+        if [ $? -ne 0 ]; then
+            echo "Problem installing build to simulator"
+            exit 1
+        fi
+        xcrun simctl launch "${DEVICE_ID}" "${BUNDLE_ID}"
+        if [ $? -ne 0 ]; then
+            echo "Problem launching build in simulator"
             exit 1
         fi
 
-    elif [ "$DO_INSTALL" = true ]; then
-        # Build and install to connected device
-        echo "Building and installing to connected device..."
+        echo "Blink launched in simulator"
 
-        # Get connected device ID
-        DEVICE_ID=$(xcrun xctrace list devices 2>&1 | grep -E "iPhone|iPad" | head -1 | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/')
-
-        if [ -z "$DEVICE_ID" ]; then
-            echo "Error: No iOS device connected. Please connect a device and try again."
+    elif [[ $DO_INSTALL == true ]]; then
+        echo "Installing to device: ${DEVICE_ID}"
+        xcrun devicectl device install app \
+            --device "${DEVICE_ID}" "${APP_PATH}"
+        if [ $? -ne 0 ]; then
+            echo "Problem installing build"
             exit 1
         fi
 
-        echo "Installing to device: $DEVICE_ID"
+        echo "Blink launched on device"
 
-        run_xcodebuild xcodebuild \
-            -project "$PROJECT" \
-            -scheme "$SCHEME" \
-            -destination "id=$DEVICE_ID" \
-            -derivedDataPath "${BUILD_DIR}/DerivedData" \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            $EXTRA_FLAGS
-    elif [ "$DO_ARCHIVE" = true ]; then
-        # Build archive
-        ARCHIVE_PATH="${BUILD_DIR}/Blink.xcarchive"
-        echo "Creating archive at: $ARCHIVE_PATH"
+    elif [[ $DO_UNSIGNED_IPA == true ]]; then
+        cp -r "${APP_PATH}" "${PAYLOAD_DIR}/"
 
-        run_xcodebuild xcodebuild \
-            -project "$PROJECT" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "${BUILD_DIR}/DerivedData" \
-            -archivePath "$ARCHIVE_PATH" \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            archive
+        # Remove app extensions that require entitlements incompatible with sideloading
+        echo "Removing incompatible app extensions..."
+        rm -rf "${PAYLOAD_DIR}/Blink.app/PlugIns"
 
+        # Inject SideloadFix.dylib for App Group and keychain fixes
+        inject_sideload_fix "${PAYLOAD_DIR}/Blink.app"
+
+        # Create .ipa (which is just a zip file)
+        (cd "${BUILD_DIR}" && zip -r -q "${IPA}" Payload)
+        APP_PATH="${BUILD_DIR}/${IPA}"
+
+    fi
+
+    # Store distribution file
+    if [[ -n $DIST ]]; then
         mkdir -p "$OUTPUT_DIR"
-        OUTPUT_ARCHIVE_PATH="${OUTPUT_DIR}/Blink-${VERSION}.xcarchive"
-        if [ "$KEEP_BUILD" = true ]; then
-            cp -R "$ARCHIVE_PATH" "$OUTPUT_ARCHIVE_PATH"
+        rm -fr "${DIST}"
+        if [[ $BUILD_KEEP = true ]]; then
+            cp -R "$APP_PATH" "$DIST"
         else
-            mv "$ARCHIVE_PATH" "$OUTPUT_ARCHIVE_PATH"
+            mv "$APP_PATH" "$DIST"
         fi
-
-        echo ""
-        echo "Archive created: $OUTPUT_ARCHIVE_PATH"
-    else
-        # Generic iOS build (unsigned .ipa for sideloading)
-        # Use sideload-friendly entitlements (no iCloud, Push, etc.)
-        run_xcodebuild xcodebuild \
-            -project "$PROJECT" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "${BUILD_DIR}/DerivedData" \
-            CONFIGURATION_BUILD_DIR="${BUILD_DIR}/Products" \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGN_ENTITLEMENTS="${SOURCE_DIR}/Blink/Blink-sideload.entitlements" \
-            DEAD_CODE_STRIPPING=NO \
-            ENABLE_PREVIEWS=NO \
-            $EXTRA_FLAGS
-
-        # Package as unsigned .ipa
-        echo ""
-        echo "Packaging unsigned .ipa for sideloading..."
-        APP_PATH="${BUILD_DIR}/Products/Blink.app"
-        IPA_PATH="${BUILD_DIR}/Blink-unsigned.ipa"
-        OUTPUT_IPA_PATH="${OUTPUT_DIR}/Blink-unsigned-${VERSION}.ipa"
-
-        if [ -d "$APP_PATH" ]; then
-            # Create Payload directory structure
-            PAYLOAD_DIR="${BUILD_DIR}/Payload"
-            rm -rf "$PAYLOAD_DIR"
-            mkdir -p "$PAYLOAD_DIR"
-            cp -r "$APP_PATH" "$PAYLOAD_DIR/"
-
-            # Remove app extensions that require entitlements incompatible with sideloading
-            echo "Removing incompatible app extensions..."
-            rm -rf "$PAYLOAD_DIR/Blink.app/PlugIns"
-
-            # Inject SideloadFix.dylib for App Group and keychain fixes
-            inject_sideload_fix "$PAYLOAD_DIR/Blink.app"
-
-            # Create .ipa (which is just a zip file)
-            cd "$BUILD_DIR"
-            rm -f "Blink-unsigned.ipa"
-            zip -r -q "Blink-unsigned.ipa" Payload
-            rm -rf "$PAYLOAD_DIR"
-            cd "$SCRIPT_DIR"
-
-            mkdir -p "$OUTPUT_DIR"
-            if [ "$KEEP_BUILD" = true ]; then
-                cp -f "$IPA_PATH" "$OUTPUT_IPA_PATH"
-            else
-                mv "$IPA_PATH" "$OUTPUT_IPA_PATH"
-            fi
-
-            echo "Created: $OUTPUT_IPA_PATH"
-        else
-            echo "Error: Build failed - Blink.app not found"
-            exit 1
-        fi
+        echo "Created: ${DIST}"
     fi
 }
 
@@ -823,7 +1070,8 @@ build_app() {
 preflight_checks
 setup_repository
 
-if [ "$SETUP_ONLY" = true ]; then
+# Handle --setup-only
+if [[ $SETUP_ONLY == true ]]; then
     echo ""
     echo "=================================="
     echo "Setup complete!"
@@ -839,38 +1087,37 @@ if [ "$SETUP_ONLY" = true ]; then
     echo "3. Or open in Xcode:"
     echo "   open $PROJECT"
     exit 0
+
+# Handle --devices
+elif [[ $LIST_DEVICES == true ]]; then
+    devices=$(device_search "false" "name" ".*" "list")
+    echo "$devices"
+    exit 0
+
+# Handle --simulators
+elif [[ $LIST_SIMS == true ]]; then
+    sims=$(device_search "true" "name" ".*" "list")
+    echo "$sims"
+    exit 0
+
 fi
 
-resolve_packages
+# Build App
+mkdir -p "$BUILD_DIR"
+build_app
 
-if [ "$DO_BUILD" = true ] || [ "$DO_INSTALL" = true ] || [ "$DO_ARCHIVE" = true ] || [ "$DO_SIMULATOR" = true ]; then
-    build_app
-    if [ "$KEEP_BUILD" = false ]; then
-        echo ""
-        echo "Cleaning build output..."
-        rm -rf "$BUILD_DIR"
-    fi
-    if [ "$KEEP_SOURCE" = false ]; then
-        echo "Cleaning source checkout..."
-        rm -rf "$SOURCE_DIR"
-    fi
+# Clean up
+if [[ $BUILD_KEEP == false ]]; then
+    echo ""
+    echo "Cleaning build output..."
+    rm -rf "$BUILD_DIR"
 fi
-
+if [[ $SOURCE_KEEP == false ]]; then
+    echo "Cleaning source checkout..."
+    rm -rf "$SOURCE_DIR"
+fi
 echo ""
 echo "=================================="
 echo "Build complete!"
 echo "=================================="
-echo ""
-
-if [ "$DO_SIMULATOR" = true ]; then
-    echo "Blink is running in the iOS Simulator."
-elif [ "$DO_INSTALL" = true ]; then
-    echo "App has been installed to your device."
-elif [ "$DO_ARCHIVE" = true ]; then
-    echo "Archive location: ${OUTPUT_ARCHIVE_PATH}"
-else
-    echo "Unsigned IPA: ${OUTPUT_IPA_PATH}"
-    echo ""
-    echo "Upload this .ipa to your signing service for sideloading."
-fi
 echo ""
